@@ -1,0 +1,12 @@
+
+mkdir .kaggle
+ls -la
+mv kaggle.json .kaggle/
+chmod 600 .kaggle/kaggle.json
+sudo apt -y install zip, sudo apt -y install python3-pip python3.11-venv, python3 -m venv pythondev, cd pythondev, source bin/activate, pip3 install kaggle,  kaggle datasets list
+kaggle datasets download -d dilwong/flightprices
+unzip flightprices.zip
+gcloud storage buckets create gs://my-project-bucket-cm --project=xxxx --default-storage-class=STANDARD --location=us-central1 --uniform-bucket-level-access
+gcloud auth login
+gcloud storage cp itineraries.csv gs://my-project-bucket-cm/landing/
+gcloud storage ls gs://my-project-bucket-cm/landing/itineraries.csv
