@@ -1,0 +1,44 @@
+# Import pandas library
+import pandas as pd
+# Set Pandas options to always display floats with a decimal point
+# (not scientific notation)
+pd.set_option('display.float_format', '{:.2f}'.format)
+pd.set_option('display.width', 1000)
+
+def perform_EDA(df : pd.DataFrame, filename : str):
+    print(f"{filename} Number of records:")
+    print(df.count())
+    print(f"{filename} Number of duplicate records: { len(df)-len(df.drop_duplicates())}" )
+    print(f"{filename} Info")
+    print(df.info())
+    print(f"{filename} Describe")
+    print(df.describe())
+    print(f"{filename} Columns with null values")
+    print(df.columns[df.isnull().any()].tolist())
+    rows_with_null_values = df.isnull().any(axis=1).sum()
+    print(f"{filename} Number of Rows with null values: {rows_with_null_values}" )
+    integer_column_list = df.select_dtypes(include='int64').columns
+    print(f"{filename} Integer data type columns: {integer_column_list}")
+    float_column_list = df.select_dtypes(include='float64').columns
+    print(f"{filename} Float data type columns: {float_column_list}")
+
+    # Print out the min and max date for each column
+    print("Minimum search date:", prices_df['searchDate'].min())
+    print("Maximum search date:", prices_df['searchDate'].max())
+    print("Minimum flight date:", prices_df['flightDate'].min())
+    print("Maximum flight date:", prices_df['flightDate'].max())
+
+# flight prices
+# Reading data from Google Cloud Storage
+# Path to flight prices files
+filepath = "gs://my-project-bucket-cm/landing"  
+# For public access use https
+# filepath = "https://storage.cloud.google.com/my-project-bucket-cm/landing"
+# For local file access use /content
+filename_list = ['itineraries.csv']
+
+for filename in filename_list:
+    # Read in flight prices info. 
+    print(f"Working on file: {filename}")
+    prices_df = pd.read_csv(f"{filepath}/{filename}", sep=',', on_bad_lines='skip')
+    perform_EDA(prices_df,filename)
