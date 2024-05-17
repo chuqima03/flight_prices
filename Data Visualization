@@ -1,0 +1,195 @@
+# Use a PySpark Kernel for these codes
+# Show the Spark Session
+spark
+# Import some modules we will need later on
+import io
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pyspark.sql import functions as F
+from google.cloud import storage
+sdf = spark.read.parquet("gs://my-project-bucket-cm/trusted/trusted_flight_prices.parquet")
+
+# Create a new column 'Price Category' that checks if 'totalFare' is greater than 400
+sdf = sdf.withColumn('Price Category', F.when(F.col('totalFare') > 400, 'Above $400').otherwise('At or Below $400'))
+price_counts = sdf.groupby('Price Category').count()
+price_counts_pd = price_counts.toPandas()
+fig = plt.figure(figsize=(8, 6))
+sns.barplot(data=price_counts_pd, x='Price Category', y='count', palette='viridis')
+plt.title('Comparison of Ticket Prices: Above vs Below $400')
+plt.xlabel('Price Category')
+plt.ylabel('Number of Tickets')
+plt.show()
+# Save the plot as a PNG file
+plt.savefig("number_of_ticket_above_400.png")
+
+# Create a buffer to hold the figure
+img_data = io.BytesIO()
+# Write the Matplotlib figure to the buffer
+fig.savefig(img_data, format='png', bbox_inches='tight')
+# Rewind the pointer to the start of the data
+img_data.seek(0)
+# Connect to Google Cloud Storage
+storage_client = storage.Client()
+# Point to the bucket
+bucket = storage_client.get_bucket('my-project-bucket-cm')
+# Create a blob to hold the data. Give it a file name
+blob = bucket.blob("number_of_ticket_above_400.png")
+# Upload the img_data contents to the blob
+blob.upload_from_file(img_data)
+
+from pyspark.sql.functions import rand
+# Randomly shuffle the DataFrame and limit to 100 rows
+sample_df = sdf.select('totalTravelDistance', 'totalFare').orderBy(rand()).limit(1000)
+
+# Convert the PySpark DataFrame to a Pandas DataFrame
+pdf = sample_df.toPandas()
+# Set the style for Seaborn plots
+sns.set_style("white")
+# Create the relationship plot
+relationship_plot = sns.lmplot(x='totalTravelDistance', y='totalFare', data=pdf)
+
+# Create a buffer to hold the figure
+img_data = io.BytesIO()
+# Write the figure to the buffer
+relationship_plot.savefig(img_data, format='png', bbox_inches='tight')
+# Rewind the pointer to the start of the data
+img_data.seek(0)
+# Connect to Google Cloud Storage
+storage_client = storage.Client()
+# Point to the bucket
+bucket = storage_client.get_bucket('my-project-bucket-cm')
+# Create a blob to hold the data. Give it a file name
+blob = bucket.blob("relationship_plot.png")
+# Upload the img_data contents to the blob
+blob.upload_from_file(img_data)
+
+# Group by 'segmentsAirlineName' and count each group
+airline_counts = sdf.groupby('segmentsAirlineName').count()
+# Filter to keep only airlines with 1000 or more tickets sold
+filtered_airline_counts = airline_counts.filter(F.col('count') >= 1000)
+# Join the original DataFrame with the filtered counts to keep only relevant records
+sdf_filtered = sdf.join(filtered_airline_counts, ['segmentsAirlineName'], how='inner')
+# Convert the filtered counts to a Pandas DataFrame for plotting
+filtered_counts_pd = filtered_airline_counts.toPandas()
+# Create the figure and plot as a horizontal bar graph
+plt.figure(figsize=(12, 10))  # Adjust the size as needed for clarity
+sns.barplot(data=filtered_counts_pd, y='segmentsAirlineName', x='count', palette='viridis', orient = 'h')
+plt.title('Number of Tickets Purchased by Airline (1000+ Tickets Only)')
+plt.xlabel('Number of Tickets')
+plt.ylabel('Airline Name')
+plt.tight_layout()  # Adjust layout for better display of names and titles
+plt.show()
+# Save the plot as a PNG file
+plt.savefig("number_of_tickets_by_airline_1000plus_horizontal.png")
+
+# Create a buffer to hold the figure
+img_data = io.BytesIO()
+# Write the Matplotlib figure to the buffer
+fig.savefig(img_data, format='png', bbox_inches='tight')
+
+# Rewind the pointer to the start of the data
+img_data.seek(0)
+# Connect to Google Cloud Storage
+storage_client = storage.Client()
+# Point to the bucket
+bucket = storage_client.get_bucket('my-project-bucket-cm')
+# Create a blob to hold the data. Give it a file name
+blob = bucket.blob("number_of_tickets_by_airline_1000plus_horizontal.png")
+# Upload the img_data contents to the blob
+blob.upload_from_file(img_data)
+
+# Aggregate the average seats remaining by destination airport
+destination_seats = sdf.groupby('destinationAirport').agg(F.avg('seatsRemaining').alias('AverageSeatsRemaining'))
+# Order by AverageSeatsRemaining in descending order to see the destinations with the most seats remaining on average
+destination_seats = destination_seats.orderBy(F.col('AverageSeatsRemaining').desc())
+destination_seats_pd = destination_seats.toPandas()
+# Create the figure and plot as a horizontal bar graph
+plt.figure(figsize=(10, 10))  # Adjust the size based on the number of destinations
+sns.barplot(data=destination_seats_pd, y='destinationAirport', x='AverageSeatsRemaining', palette='viridis', orient='h')
+
+plt.title('Average Seats Remaining by Destination Airport')
+plt.xlabel('Average Seats Remaining')
+plt.ylabel('Destination Airport')
+plt.tight_layout()  # Adjust layout for better display of names and titles
+plt.show()
+# save the plot
+plt.savefig("average_seats_remaining_by_destination.png")
+
+# Create a buffer to hold the figure
+img_data = io.BytesIO()
+# Write the Matplotlib figure to the buffer
+fig.savefig(img_data, format='png', bbox_inches='tight')
+# Rewind the pointer to the start of the data
+img_data.seek(0)
+# Connect to Google Cloud Storage
+storage_client = storage.Client()
+# Point to the bucket
+bucket = storage_client.get_bucket('my-project-bucket-cm')
+# Create a blob to hold the data. Give it a file name
+blob = bucket.blob("average_seats_remaining_by_destination.png")
+# Upload the img_data contents to the blob
+blob.upload_from_file(img_data)
+# Aggregate the average totalFare by isBasicEconomy status
+fare_comparison = sdf.groupby('isBasicEconomy').agg(F.avg('totalFare').alias('AverageTotalFare'))
+fare_comparison_pd = fare_comparison.toPandas()
+# Replace the 1 and 0 in isBasicEconomy with more descriptive labels
+fare_comparison_pd['isBasicEconomy'] = fare_comparison_pd['isBasicEconomy'].map({1: 'Basic Economy', 0: 'Not Basic Economy'})
+plt.figure(figsize=(8, 6))
+sns.barplot(data=fare_comparison_pd, x='isBasicEconomy', y='AverageTotalFare', palette='viridis')
+plt.title('Comparison of Average Total Fare: Basic Economy vs. Not Basic Economy')
+plt.xlabel('Ticket Type')
+plt.ylabel('Average Total Fare ($)')
+plt.show()
+# save the plot
+plt.savefig("average_fare_comparison_basic_economy.png")
+
+# Create a buffer to hold the figure
+img_data = io.BytesIO()
+# Write the Matplotlib figure to the buffer
+fig.savefig(img_data, format='png', bbox_inches='tight')
+# Rewind the pointer to the start of the data
+img_data.seek(0)
+# Connect to Google Cloud Storage
+storage_client = storage.Client()
+# Point to the bucket
+bucket = storage_client.get_bucket('my-project-bucket-cm')
+# Create a blob to hold the data. Give it a file name
+blob = bucket.blob("average_fare_comparison_basic_economy.png")
+# Upload the img_data contents to the blob
+blob.upload_from_file(img_data)
+
+# Convert the numeric values to vector columns
+vector_column = "correlation_features"
+# Choose the numeric (Double) columns 
+numeric_columns = ['elapsedDays', 'isBasicEconomy', 'isRefundable', 'isNonStop', 'totalFare', 'seatsRemaining', 'totalTravelDistance', 'duration_minutes']
+assembler = VectorAssembler(inputCols=numeric_columns, outputCol=vector_column)
+sdf_vector = assembler.transform(sdf).select(vector_column)
+# Create the correlation matrix, then get just the values and convert to a list
+matrix = Correlation.corr(sdf_vector, vector_column).collect()[0][0]
+correlation_matrix = matrix.toArray().tolist() 
+# Convert the correlation to a Pandas dataframe
+correlation_matrix_df = pd.DataFrame(data=correlation_matrix, columns=numeric_columns, index=numeric_columns) 
+
+heatmap_plot = plt.figure(figsize=(16,5))  
+# Set the style for Seaborn plots
+sns.set_style("white")
+sns.heatmap(correlation_matrix_df, 
+            xticklabels=correlation_matrix_df.columns.values,
+            yticklabels=correlation_matrix_df.columns.values,  cmap="Greens", annot=True)
+plt.savefig("correlation_matrix.png")
+
+# Create a buffer to hold the figure
+img_data = io.BytesIO()
+# Write the figure to the buffer
+heatmap_plot.savefig(img_data, format='png', bbox_inches='tight')
+# Rewind the pointer to the start of the data
+img_data.seek(0)
+# Connect to Google Cloud Storage
+storage_client = storage.Client()
+# Point to the bucket
+bucket = storage_client.get_bucket('my-project-bucket-cm')
+# Create a blob to hold the data. Give it a file name
+blob = bucket.blob("correlation_matrix.png")
+# Upload the img_data contents to the blob
+blob.upload_from_file(img_data)
