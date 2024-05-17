@@ -1,0 +1,29 @@
+# Use a PySpark Kernel for these codes
+# Show the Spark Session
+spark
+# Import some functions we will use later
+from pyspark.sql.functions import col, isnan, isnull, when, count, udf
+# Set the logging level for ERRORs only.
+sc.setLogLevel("ERROR")
+# Set up the path to a flight price data stored on GCS
+bucket = 'my-project-bucket-cm/landing/' 
+filename = 'itineraries.csv'
+file_path = 'gs://' + bucket + filename
+sdf = spark.read.csv(file_path, sep=',', header=True, inferSchema=True)
+# Check the schema
+sdf.printSchema()
+# Get the number of records in the dataframe (an Action)
+sdf.count()
+# Look at statistics for some specific columns
+sdf.select("elapsedDays", "baseFare", "totalFare", 'seatsRemaining', 'totalTravelDistance').summary("count", "min", "max", "mean").show()
+# Check to see if some of the columns have NULL values
+sdf.select([count(when(isnull(c), c)).alias(c) for c in ["totalTravelDistance", "segmentsEquipmentDescription", "segmentsDistance"] ]).show()
+# Drop some of the records where the certain columns are empty (null or nan)
+sdf = sdf.na.drop(subset=["totalTravelDistance"])
+#Drop outliers on totalFare that's higher than $4,000 
+sdf = sdf[sdf['totalFare'] <= 4000]
+#Drop unneeded columns 
+sdf = sdf.drop('legId',  'searchDate', 'fareBasisCode', "segmentsDepartureTimeEpochSeconds", "segmentsDepartureTimeRaw", "segmentsArrivalTimeEpochSeconds", "segmentsArrivalTimeRaw","segmentsEquipmentDescription", "segmentsAirlineCode","segmentsDurationInSeconds","segmentsDistance","segmentsCabinCode")
+# Save the cleaned data in a new file. Use Parquet file format.
+output_file_path= f"gs://my-project-bucket-cm/cleaned/cleaned_flight_prices.parquet"
+sdf.write.parquet(output_file_path)
