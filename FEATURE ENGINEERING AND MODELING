@@ -1,0 +1,181 @@
+# Use a PySpark Kernel for these codes
+# Show the Spark Session
+spark
+# Import some modules we will need later on
+from pyspark.sql.functions import col, isnan, when, count, udf, to_date, year, month, date_format, size, split
+from pyspark.ml.stat import Correlation
+from pyspark.ml.feature import VectorAssembler
+# Pipeline Example: Importing functions and modules
+from pyspark.sql.functions import *
+from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler, MinMaxScaler
+from pyspark.ml import Pipeline
+# Import the logistic regression model
+from pyspark.ml.classification import LogisticRegression, LogisticRegressionModel
+# Import the evaluation module
+from pyspark.ml.evaluation import *
+# Import the model tuning module
+from pyspark.ml.tuning import *
+import numpy as np
+import re
+from pyspark.sql.functions import udf
+from pyspark.sql.types import IntegerType
+from pyspark.ml.regression import GeneralizedLinearRegression
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
+
+#read the parquet file from cleaned folder in bucket 
+sdf = spark.read.parquet("gs://my-project-bucket-cm/cleaned/cleaned_flight_prices.parquet")
+
+# Define a function to parse the duration format to minutes
+def parse_duration(duration_str):
+    hours = re.search(r'(\d+)H', duration_str)
+    minutes = re.search(r'(\d+)M', duration_str)
+    total_minutes = 0
+    if hours:
+        total_minutes += int(hours.group(1)) * 60
+    if minutes:
+        total_minutes += int(minutes.group(1))
+    return total_minutes
+# Register the function as a UDF
+parse_duration_udf = udf(parse_duration, IntegerType())
+# Apply the UDF to the 'travelDuration' column and create a new 'duration_minutes' column
+sdf = sdf.withColumn('duration_minutes', parse_duration_udf(sdf['travelDuration']))
+# Use the "duration_minutes" column for travel time, no longer need "travelDuration" column
+sdf = sdf.drop('travelDuration')
+
+# Engineer additional date feature columns based on the flightDate
+sdf = sdf.withColumn("flight_dayofweek", date_format(col("flightDate"), "E"))  
+sdf = sdf.withColumn("flight_weekend", when(sdf.flight_dayofweek == 'Saturday',1.0).when(sdf.flight_dayofweek == 'Sunday', 1.0).otherwise(0))
+
+# List of columns to convert from Boolean to integer
+boolean_columns = ['isBasicEconomy', 'isRefundable', 'isNonStop']
+# For each column, update the DataFrame by converting True to 1 and False to 0
+for column in boolean_columns:
+    sdf = sdf.withColumn(column, when(sdf[column], 1).otherwise(0))
+
+# Create a label.  =1 if totalFare >=400, =0 otherwise
+sdf = sdf.withColumn("label", when(sdf.totalFare >= 400, 1.0).otherwise(0.0) )
+
+# Create an indexer for the string based columns. 
+indexer = StringIndexer(inputCols=["startingAirport", "destinationAirport", "segmentsArrivalAirportCode", "segmentsDepartureAirportCode", "segmentsAirlineName"],
+                        outputCols=["startingAirportIndex", "destinationAirportIndex", "segmentsArrivalAirportCodeIndex", "segmentsDepartureAirportCodeIndex", "segmentsAirlineNameIndex"],
+                       handleInvalid="keep")
+
+# Create an encoder for the string based columns.
+encoder = OneHotEncoder(inputCols=["startingAirportIndex", "destinationAirportIndex", "segmentsArrivalAirportCodeIndex", "segmentsDepartureAirportCodeIndex", "segmentsAirlineNameIndex"],
+                        outputCols=["startingAirportVector", "destinationAirportVector", "segmentsArrivalAirportCodeVector", "segmentsDepartureAirportCodeVector", "segmentsAirlineNameVector"],
+                        dropLast=False, handleInvalid="keep")
+
+# Scale the elapsedDays column
+elapsedDays_assembler = VectorAssembler(inputCols=["elapsedDays"], outputCol="elapsedDaysVector")
+elapsedDays_scaler = MinMaxScaler(inputCol="elapsedDaysVector", outputCol="elapsedDaysScaled")
+
+# Scale the duration_minutes column
+duration_minutes_assembler = VectorAssembler(inputCols=["duration_minutes"], outputCol="duration_minutesVector")
+duration_minutes_scaler = MinMaxScaler(inputCol="duration_minutesVector", outputCol="duration_minutesScaled")
+
+# Scale the seatsRemaining column
+seatsRemaining_assembler = VectorAssembler(inputCols=["seatsRemaining"], outputCol="seatsRemainingVector")
+seatsRemaining_scaler = MinMaxScaler(inputCol="seatsRemainingVector", outputCol="seatsRemainingScaled")
+
+# Scale the totalTravelDistance column
+totalTravelDistance_assembler = VectorAssembler(inputCols=["totalTravelDistance"], outputCol="totalTravelDistanceVector")
+totalTravelDistance_scaler = MinMaxScaler(inputCol="totalTravelDistanceVector", outputCol="totalTravelDistanceScaled")
+
+# Create an assembler for the individual feature vectors and the float/double columns
+assembler = VectorAssembler(inputCols=["elapsedDaysScaled", "duration_minutesScaled", "seatsRemainingScaled", "totalTravelDistanceScaled", "startingAirportVector", "destinationAirportVector", "segmentsArrivalAirportCodeVector", "segmentsDepartureAirportCodeVector", "segmentsAirlineNameVector", "flight_weekend", "isBasicEconomy", 'isRefundable', 'isNonStop'], 
+                            outputCol="features")
+# Create the pipeline
+flightpirces_pipe = Pipeline(stages=[indexer, encoder, elapsedDays_assembler, elapsedDays_scaler, duration_minutes_assembler, duration_minutes_scaler, seatsRemaining_assembler, seatsRemaining_scaler, totalTravelDistance_assembler, totalTravelDistance_scaler, assembler])
+# Call .fit to transform the data
+transformed_sdf = flightpirces_pipe.fit(sdf).transform(sdf)
+
+# Save the featured data in a new file. 
+output_file_path= f"gs://my-project-bucket-cm/trusted/trusted_flight_prices.parquet"
+sdf.write.parquet(output_file_path)
+
+# Split the data into training and test sets
+trainingData, testData = sdf.randomSplit([0.70, 0.3], seed=42)
+# Create a LogisticRegression Estimator
+lr = LogisticRegression(maxIter=5)
+# Create the pipeline
+flightpirces_pipe = Pipeline(stages=[indexer, encoder, elapsedDays_assembler, elapsedDays_scaler, duration_minutes_assembler, duration_minutes_scaler, seatsRemaining_assembler, seatsRemaining_scaler, totalTravelDistance_assembler, totalTravelDistance_scaler, assembler, lr])
+
+# Create a grid to hold hyperparameters 
+grid = ParamGridBuilder()
+grid = grid.addGrid(lr.regParam, [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+grid = grid.addGrid(lr.elasticNetParam, [0, 0.5, 1])
+# Build the parameter grid
+grid = grid.build()
+# How many models to be tested
+print('Number of models to be tested: ', len(grid))
+# Create a BinaryClassificationEvaluator to evaluate how well the model works
+evaluator = BinaryClassificationEvaluator(metricName="areaUnderROC")
+# Create the CrossValidator using the hyperparameter grid
+cv = CrossValidator(estimator=flightpirces_pipe, 
+                    estimatorParamMaps=grid, 
+                    evaluator=evaluator, 
+                    numFolds=3)
+# Train the models
+cv  = cv.fit(trainingData)
+print("Average Metrics for Each model: ", cv.avgMetrics)
+
+# Test the predictions
+predictions = cv.transform(testData)
+# Calculate AUC
+auc = evaluator.evaluate(predictions)
+print(f"AUC: {auc}")
+# Create the confusion matrix
+predictions.groupby('label').pivot('prediction').count().fillna(0).show()
+cm = predictions.groupby('label').pivot('prediction').count().fillna(0).collect()
+def calculate_recall_precision(cm):
+    tn = cm[0][1]                # True Negative
+    fp = cm[0][2]                # False Positive
+    fn = cm[1][1]                # False Negative
+    tp = cm[1][2]                # True Positive
+    precision = tp / ( tp + fp )            
+    recall = tp / ( tp + fn )
+    accuracy = ( tp + tn ) / ( tp + tn + fp + fn )
+    f1_score = 2 * ( ( precision * recall ) / ( precision + recall ) )
+    return accuracy, precision, recall, f1_score
+print("Accuracy, Precision, Recall, F1 Score")
+print( calculate_recall_precision(cm) )
+
+# Look at the parameters for the best model that was evaluated from the grid
+parammap = cv.bestModel.stages[13].extractParamMap()
+for p, v in parammap.items():
+    print(p, v)
+# Grab the model from Stage 13 of the pipeline
+bestModel = cv.bestModel.stages[13]
+import matplotlib.pyplot as plt
+plt.figure(figsize=(5,5))
+plt.plot(bestModel.summary.roc.select('FPR').collect(),
+         bestModel.summary.roc.select('TPR').collect())
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title("ROC Curve")
+plt.savefig("roc1.png")
+plt.show()
+print("Area under ROC curve:", mymodel.summary.areaUnderROC)
+
+# Extract the coefficients on each of the variables
+coeff = mymodel.coefficients.toArray().tolist()
+# Loop through the features to extract the original column names. Store in the var_index dictionary
+var_index = dict()
+for variable_type in ['numeric', 'binary']:
+    for variable in predictions.schema["features"].metadata["ml_attr"]["attrs"][variable_type]:
+         print(f"Found variable: {variable}" )
+         idx = variable['idx']
+         name = variable['name']
+         var_index[idx] = name      # Add the name to the dictionary
+# Loop through all of the variables found and print out the associated coefficients
+for i in range(len(var_index)):
+    print(f"Coefficient {i} {var_index[i]}  {coeff[i]}")
+# Show the test results
+predictions.select('startingAirport', "destinationAirport", "elapsedDays", "duration_minutes", "seatsRemaining", "totalTravelDistance", "segmentsArrivalAirportCode", "segmentsDepartureAirportCode", "segmentsAirlineName", "flight_weekend", "isBasicEconomy", 'isRefundable', 'isNonStop', 'probability', 'prediction', 'label').show(30, truncate=False)
+# Evaluate the predictions. Area Under ROC curve
+print(evaluator.evaluate(predictions))
+
+# Save the best model
+model_path = f"gs://my-project-bucket-cm/models/flightsprice_logistic_regression_model"
+bestModel.write().overwrite().save(model_path)
